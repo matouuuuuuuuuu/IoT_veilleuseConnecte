@@ -1,0 +1,9 @@
+# Node
+node_modules/
+
+# Arduino
+code arduino
+
+# fichiers npm (optionnel)
+package.json
+package-lock.json
