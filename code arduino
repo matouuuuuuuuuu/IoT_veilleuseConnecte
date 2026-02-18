@@ -1,0 +1,415 @@
+#include <SoftwareSerial.h>
+#include <DHT.h>
+
+// Définition des broches
+SoftwareSerial BluetoothSerial(10, 11);
+const int redPin = 5;
+const int greenPin = 3;
+const int bluePin = 4;
+const int buzzer1 = 7;   // Buzzer principal (mélodie)
+const int buzzer2 = 8;   // Buzzer harmonie 1
+const int buzzer3 = 9;   // Buzzer harmonie 2
+const int lightSensor = A1;
+const int soundSensor = A0;
+//const int tempSensor = A2;
+
+// Seuils et réglages
+const int thresholdL = 100;
+const int thresholdS = 550;
+bool manualMode = false;  // Indique si le Bluetooth a pris le contrôle
+/*#define HUM_MAX 50.0
+#define TEMP_MAX 25.0
+#define TEMP_MIN 10.0
+
+DHT dht(tempSensor, DHT11);*/
+
+void setup() {
+  pinMode(redPin, OUTPUT);
+  pinMode(greenPin, OUTPUT);
+  pinMode(bluePin, OUTPUT);
+  pinMode(lightSensor, INPUT);
+  pinMode(soundSensor, INPUT);
+  pinMode(buzzer1, OUTPUT);
+  pinMode(buzzer2, OUTPUT);
+  pinMode(buzzer3, OUTPUT);
+  //dht.begin();
+  
+  Serial.begin(9600);
+  BluetoothSerial.begin(9600);
+  
+  setColor(0, 0, 0); // Éteint au démarrage
+  Serial.println("Systeme pret - USB + Bluetooth actifs!");
+}
+
+void loop() {
+  int lightValue = analogRead(lightSensor);
+  int soundLevel = analogRead(soundSensor);
+  
+  // Envoi des données pour le moniteur série
+  Serial.print("L:"); Serial.print(lightValue);
+  Serial.print(" S:"); Serial.println(soundLevel);
+
+  // *** GESTION DES COMMANDES USB (Serial) ***
+  if (Serial.available()) {
+    char c = Serial.read();
+    Serial.print("USB reçu: "); Serial.println(c);
+    handleCommand(c, true);  // true = source USB
+  }
+
+  // *** GESTION DES COMMANDES BLUETOOTH ***
+  if (BluetoothSerial.available()) {
+    char c = BluetoothSerial.read();
+    Serial.print("BT reçu: "); Serial.println(c);
+    handleCommand(c, false);  // false = source Bluetooth
+  }
+  
+  // --- PARTIE CAPTEURS (Seulement si PAS de mode manuel) ---
+  if (manualMode == false) {
+    // Lecture température et humidité
+    /*float h = dht.readHumidity();
+    float t = dht.readTemperature();
+
+    if (!isnan(h) && !isnan(t)) {
+      Serial.print("Humidité: "); Serial.print(h);
+      Serial.print("%  Température: "); Serial.print(t);
+      Serial.println("°C");
+
+      // Vérifier les alertes température/humidité
+      checkAlert(h, t);
+    } else {
+      Serial.println("Erreur DHT11");
+    }*/
+
+    // Gestion des LEDs selon les capteurs (seulement si pas d'alerte)
+    //if (h <= HUM_MAX && t <= TEMP_MAX && t >= TEMP_MIN) {
+      if (soundLevel > thresholdS) {
+        setColor(0, 255, 0); // Vert si bruit
+      }
+      else if (lightValue < thresholdL) {
+        setColor(255, 0, 0); // Rouge si obscurité
+      }
+      else {
+        setColor(0, 0, 0); // Éteint sinon
+      }
+    //}
+  }
+
+  delay(100);
+}
+
+// *** FONCTION CENTRALISÉE DE GESTION DES COMMANDES ***
+void handleCommand(char c, bool isUSB) {
+  // Réponse vers la bonne interface
+  if (c == '1' || c == 'r') { 
+    setColor(255, 0, 0); 
+    sendResponse("Rouge", isUSB);
+    manualMode = true; 
+  }
+  else if (c == '2' || c == 'g') { 
+    setColor(0, 255, 0); 
+    sendResponse("Vert", isUSB);
+    manualMode = true; 
+  }
+  else if (c == '3' || c == 'b') { 
+    setColor(0, 0, 255); 
+    sendResponse("Bleu", isUSB);
+    manualMode = true; 
+  }
+  else if (c == '4' || c == 'y') { 
+    setColor(255, 255, 0); 
+    sendResponse("Jaune", isUSB);
+    manualMode = true; 
+  }
+  else if (c == '5' || c == 'w') { 
+    setColor(255, 255, 255); 
+    sendResponse("Blanc", isUSB);
+    manualMode = true; 
+  }
+  else if (c == '!') { 
+    sendResponse("Sirene", isUSB);
+    siren(); 
+  }
+  else if (c == 'p') { 
+    sendResponse("Melodie P", isUSB);
+    playMelodyP(); 
+  }
+  else if (c == 's') { 
+    sendResponse("Melodie S", isUSB);
+    playMelodyS(); 
+  }
+  else if (c == 'f') { 
+    sendResponse("Melodie F", isUSB);
+    playMelodyF(); 
+  }
+  else if(c == 't'){
+    sendResponse("Test", isUSB);
+    test();
+  }
+  else if (c == '0' || c == 'o' || c == 'a') { 
+    setColor(0, 0, 0); 
+    manualMode = false; 
+    sendResponse("Mode Auto", isUSB);
+  }
+}
+
+// *** FONCTION POUR ENVOYER LA RÉPONSE SUR LE BON PORT ***
+void sendResponse(String message, bool isUSB) {
+  if (isUSB) {
+    Serial.println(message);
+  } else {
+    BluetoothSerial.println(message);
+  }
+}
+
+// Fonction pour régler la couleur des LEDs
+void setColor(int r, int g, int b) {
+  analogWrite(redPin, r);
+  analogWrite(greenPin, g);
+  analogWrite(bluePin, b);
+}
+
+// Fonction pour jouer un "accord" en arpeggio rapide (simule un accord)
+void playChordArpeggio(int note1, int note2, int note3, int totalDuration) {
+  int noteTime = totalDuration / 6;
+  
+  tone(buzzer1, note1, noteTime);
+  delay(noteTime / 2);
+  tone(buzzer2, note2, noteTime);
+  delay(noteTime / 2);
+  tone(buzzer3, note3, noteTime);
+  delay(noteTime / 2);
+  
+  tone(buzzer1, note1, noteTime);
+  delay(noteTime / 2);
+  tone(buzzer2, note2, noteTime);
+  delay(noteTime / 2);
+  tone(buzzer3, note3, noteTime);
+  delay(totalDuration - (noteTime * 3));
+  
+  noTone(buzzer1);
+  noTone(buzzer2);
+  noTone(buzzer3);
+}
+
+// Fonction alternative: joue les 3 notes en séquence rapide
+void playChordSequence(int note1, int note2, int note3, int duration) {
+  int noteTime = duration / 3;
+  
+  tone(buzzer1, note1, noteTime);
+  delay(noteTime);
+  
+  tone(buzzer2, note2, noteTime);
+  delay(noteTime);
+  
+  tone(buzzer3, note3, noteTime);
+  delay(noteTime);
+  
+  noTone(buzzer1);
+  noTone(buzzer2);
+  noTone(buzzer3);
+}
+
+// Fonction Sirène (!) avec effet alternant
+void siren() {
+  for (int i = 0; i < 20; i++) {
+    tone(buzzer1, 900, 150);
+    delay(100);
+    tone(buzzer3, 950, 150);
+    delay(100);
+    tone(buzzer2, 850, 150);
+    delay(100);
+    
+    tone(buzzer1, 500, 150);
+    delay(100);
+    tone(buzzer3, 550, 150);
+    delay(100);
+    tone(buzzer2, 450, 150);
+    delay(100);
+  }
+  noTone(buzzer1);
+  noTone(buzzer2);
+  noTone(buzzer3);
+}
+
+void test() {
+  for (int i = 0; i < 10; i++) {
+    tone(buzzer3, 950, 250);
+    setColor(0, 255, 0);
+    delay(300);
+    noTone(buzzer3);
+    
+    tone(buzzer2, 950, 250);
+    setColor(0, 0, 255);
+    delay(300);
+    noTone(buzzer2);
+  }
+}
+
+// Fonction Mélodie P - Joyeux Anniversaire avec arpèges
+void playMelodyP() {
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(440, 330, 220, 400); delay(50);
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(523, 392, 262, 600); delay(50);
+  playChordArpeggio(494, 370, 247, 400); delay(50);
+
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(440, 330, 220, 400); delay(50);
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(587, 440, 294, 600); delay(50);
+  playChordArpeggio(523, 392, 262, 400); delay(50);
+
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(392, 294, 196, 400); delay(50);
+  playChordArpeggio(784, 587, 392, 400); delay(50);
+  playChordArpeggio(659, 494, 330, 400); delay(50);
+  playChordArpeggio(523, 392, 262, 600); delay(50);
+  playChordArpeggio(494, 370, 247, 400); delay(50);
+  playChordArpeggio(440, 330, 220, 800); delay(100);
+
+  noTone(buzzer1);
+  noTone(buzzer2);
+  noTone(buzzer3);
+}
+
+// Fonction Mélodie F - Frère Jacques avec effet canon séquentiel
+void playMelodyF() {
+  tone(buzzer1, 523, 400); delay(200);
+  tone(buzzer2, 523, 400); delay(200);
+  tone(buzzer3, 523, 400); delay(400);
+  
+  tone(buzzer1, 587, 400); delay(200);
+  tone(buzzer2, 587, 400); delay(200);
+  tone(buzzer3, 587, 400); delay(400);
+  
+  tone(buzzer1, 659, 400); delay(200);
+  tone(buzzer2, 659, 400); delay(200);
+  tone(buzzer3, 659, 400); delay(400);
+  
+  tone(buzzer1, 523, 600); delay(650);
+
+  tone(buzzer1, 523, 400); delay(200);
+  tone(buzzer2, 523, 400); delay(200);
+  tone(buzzer3, 523, 400); delay(400);
+  
+  tone(buzzer1, 587, 400); delay(200);
+  tone(buzzer2, 587, 400); delay(200);
+  tone(buzzer3, 587, 400); delay(400);
+  
+  tone(buzzer1, 659, 400); delay(200);
+  tone(buzzer2, 659, 400); delay(200);
+  tone(buzzer3, 659, 400); delay(400);
+  
+  tone(buzzer1, 523, 600); delay(650);
+
+  playChordArpeggio(659, 523, 392, 600); delay(50);
+  playChordArpeggio(698, 554, 415, 600); delay(50);
+  playChordArpeggio(784, 587, 392, 800); delay(50);
+
+  playChordArpeggio(659, 523, 392, 600); delay(50);
+  playChordArpeggio(698, 554, 415, 600); delay(50);
+  playChordArpeggio(784, 587, 392, 800); delay(50);
+
+  tone(buzzer1, 784, 300); delay(150);
+  tone(buzzer2, 880, 300); delay(150);
+  tone(buzzer3, 987, 300); delay(150);
+  
+  tone(buzzer3, 880, 300); delay(150);
+  tone(buzzer2, 784, 300); delay(150);
+  tone(buzzer1, 698, 300); delay(150);
+  
+  playChordArpeggio(659, 523, 392, 600); delay(50);
+  playChordArpeggio(523, 392, 262, 600); delay(50);
+
+  tone(buzzer1, 523, 400); delay(200);
+  tone(buzzer2, 659, 400); delay(200);
+  tone(buzzer3, 784, 400); delay(250);
+  
+  tone(buzzer1, 392, 400); delay(200);
+  tone(buzzer2, 523, 400); delay(200);
+  tone(buzzer3, 659, 400); delay(250);
+  
+  playChordArpeggio(523, 392, 262, 800); delay(100);
+
+  noTone(buzzer1);
+  noTone(buzzer2);
+  noTone(buzzer3);
+}
+
+// Fonction Mélodie S - Star Wars avec arpèges
+void playMelodyS() {
+  playChordArpeggio(440, 330, 220, 500); delay(50);
+  playChordArpeggio(440, 330, 220, 500); delay(50);
+  playChordArpeggio(440, 330, 220, 500); delay(50);
+
+  playChordArpeggio(349, 262, 175, 350); delay(50);
+  tone(buzzer1, 523, 150); delay(150);
+  tone(buzzer2, 392, 150); delay(50);
+  playChordArpeggio(440, 330, 220, 500); delay(50);
+
+  playChordArpeggio(349, 262, 175, 350); delay(50);
+  tone(buzzer1, 523, 150); delay(150);
+  tone(buzzer2, 392, 150); delay(50);
+  playChordArpeggio(440, 330, 220, 800); delay(100);
+
+  playChordArpeggio(659, 494, 330, 500); delay(50);
+  playChordArpeggio(659, 494, 330, 500); delay(50);
+  playChordArpeggio(659, 494, 330, 500); delay(50);
+
+  playChordArpeggio(698, 523, 349, 350); delay(50);
+  tone(buzzer1, 523, 150); delay(150);
+  tone(buzzer2, 392, 150); delay(50);
+  playChordArpeggio(415, 311, 208, 500); delay(50);
+
+  playChordArpeggio(349, 262, 175, 350); delay(50);
+  tone(buzzer1, 523, 150); delay(150);
+  tone(buzzer2, 392, 150); delay(50);
+  playChordArpeggio(440, 330, 220, 800); delay(100);
+
+  tone(buzzer1, 880, 200); delay(100);
+  tone(buzzer2, 440, 200); delay(100);
+  tone(buzzer3, 220, 200); delay(250);
+  
+  playChordArpeggio(440, 330, 220, 350); delay(50);
+  playChordArpeggio(440, 330, 220, 150); delay(50);
+
+  tone(buzzer1, 880, 200); delay(100);
+  tone(buzzer2, 440, 200); delay(100);
+  tone(buzzer3, 220, 200); delay(250);
+  
+  playChordArpeggio(830, 622, 415, 350); delay(50);
+  playChordArpeggio(784, 587, 392, 150); delay(50);
+
+  tone(buzzer1, 740, 150); delay(100);
+  tone(buzzer2, 698, 150); delay(100);
+  tone(buzzer3, 740, 350); delay(200);
+
+  playChordArpeggio(523, 392, 262, 500); delay(50);
+  playChordArpeggio(440, 330, 220, 350); delay(50);
+  playChordArpeggio(349, 262, 175, 150); delay(50);
+
+  playChordArpeggio(523, 392, 262, 500); delay(50);
+  playChordArpeggio(440, 330, 220, 350); delay(50);
+  playChordArpeggio(349, 262, 175, 150); delay(50);
+
+  playChordArpeggio(440, 330, 220, 1000); delay(200);
+
+  noTone(buzzer1);
+  noTone(buzzer2);
+  noTone(buzzer3);
+}
+
+// Fonction de vérification des alertes
+/*void checkAlert(float humidite, float temperature) {
+  if (humidite > HUM_MAX) {
+    setColor(255, 0, 255); 
+  }
+  else if(temperature > TEMP_MAX){
+    setColor(255, 128, 0); 
+  }
+  else if(temperature < TEMP_MIN){
+    setColor(64, 255, 16); 
+  }
+}*/
