@@ -24,6 +24,7 @@
             <button id="btnConnect" class="btn btn-primary">
                 🔌 Connecter en USB
             </button>
+            <button onclick="connectArduino()">Connecter Arduino</button>
             <button id="btnDisconnect" class="btn btn-danger" style="display: none; margin-top: 10px;">
                 ⏹️ Déconnecter
             </button>
@@ -216,5 +217,7 @@
         });
     </script>
     <script src="./js/functions.js"></script>
+    <script type="module" src="./js/bridge.js"></script>
+
     </body>
 </html>
