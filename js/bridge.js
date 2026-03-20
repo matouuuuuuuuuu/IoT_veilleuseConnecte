@@ -1,70 +1,47 @@
-import { onStateChange, patchTelemetry } from "./firebase.js";
+// js/bridge.js
+import {
+  onStateChange,
+  addAlert,
+  addHistory,
+  setBridgeOnline,
+  setBridgeOffline,
+  setLastSeen
+} from "./firebase.js";
 
-let port = null;
-let writer = null;
-let encoder = new TextEncoder();
-
-
-// 🔌 Connexion au port série (bouton à appeler)
-window.connectArduino = async () => {
-  try {
-    port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 9600 });
-
-    writer = port.writable.getWriter();
-
-    console.log("Arduino connecté ✅");
-
-    await patchTelemetry({
-      connected: true,
-      lastSeen: Date.now()
-    });
-
-  } catch (err) {
-    console.error("Erreur connexion :", err);
-  }
+// ─── Exposition des fonctions Firebase à functions.js (non-module) ────────────
+window.fb = {
+  addAlert,
+  addHistory,
+  setBridgeOnline,
+  setBridgeOffline,
+  setLastSeen
 };
 
+// ─── Firebase → Arduino ───────────────────────────────────────────────────────
+onStateChange(async (state) => {
+  if (!state) return;
+  console.log("État Firebase reçu :", state);
 
-// 📤 Envoi vers Arduino
-function sendToArduinoLine(line) {
-  if (!writer) {
-    console.warn("Pas connecté à l'Arduino");
+  if (typeof sendCommand !== "function") return;
+
+  if (!state.on) {
+    sendCommand('0', 'Firebase → Extinction');
     return;
   }
 
-  writer.write(encoder.encode(line));
-}
-
-
-// 🔄 Firebase → Arduino
-onStateChange(async (state) => {
-  if (!state) return;
-
-  console.log("Etat Firebase reçu :", state);
-
-  const payload = {
-    on: !!state.on,
-    brightness: Number(state.brightness ?? 0),
-    mode: String(state.mode ?? "warm"),
-    r: Number(state.color?.r ?? 0),
-    g: Number(state.color?.g ?? 0),
-    b: Number(state.color?.b ?? 0),
-  };
-
-  try {
-    sendToArduinoLine(JSON.stringify(payload) + "\n");
-
-    await patchTelemetry({
-      connected: true,
-      lastSeen: Date.now()
-    });
-
-  } catch (e) {
-    console.error("Erreur envoi Arduino :", e);
-
-    await patchTelemetry({
-      connected: false
-    });
+  if (state.mode === "auto") {
+    sendCommand('a', 'Firebase → Mode Auto');
+    return;
   }
+
+  if (state.color) {
+    const { r, g, b } = state.color;
+    if      (r > 200 && g < 50  && b < 50)  sendCommand('r', 'Firebase → Rouge');
+    else if (r < 50  && g > 200 && b < 50)  sendCommand('g', 'Firebase → Vert');
+    else if (r < 50  && g < 50  && b > 200) sendCommand('b', 'Firebase → Bleu');
+    else if (r > 200 && g > 200 && b < 50)  sendCommand('y', 'Firebase → Jaune');
+    else if (r > 200 && g > 200 && b > 200) sendCommand('w', 'Firebase → Blanc');
+  }
+
+  await setLastSeen();
 });

@@ -5,18 +5,16 @@ import {
   ref,
   set,
   update,
+  push,
+  query,
+  orderByKey,
+  get,
   onValue,
+  onDisconnect,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+// ─── Configuration Firebase ───────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyBL6CLqNUnU50M4nGFp53jQ0DXLRcLizIY",
   authDomain: "veilleuseconnectee.firebaseapp.com",
@@ -28,32 +26,116 @@ const firebaseConfig = {
   measurementId: "G-MZ84ZZW3B2"
 };
 
-// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
 export const db = getDatabase(app);
 
-// Helpers
-export const stateRef = ref(db, "veilleuse/state");
+// ─── Références ───────────────────────────────────────────────────────────────
+export const stateRef     = ref(db, "veilleuse/state");
 export const telemetryRef = ref(db, "veilleuse/telemetry");
+export const alertsRef    = ref(db, "veilleuse/alerts");
+export const historyRef   = ref(db, "veilleuse/history");
 
-// Ecrire l'état complet (commande)
+const MAX_ENTRIES = 100;
+
+// ─── Utilitaire : nettoie les anciennes entrées si > MAX_ENTRIES ──────────────
+async function trimCollection(collectionRef) {
+  const snap = await get(query(collectionRef, orderByKey()));
+  if (!snap.exists()) return;
+
+  const keys = Object.keys(snap.val());
+  if (keys.length <= MAX_ENTRIES) return;
+
+  const toDelete = keys.slice(0, keys.length - MAX_ENTRIES);
+  const updates = Object.fromEntries(toDelete.map(k => [k, null]));
+  await update(collectionRef, updates);
+}
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
 export async function writeState(state) {
-  // state = { on, brightness, mode, color:{r,g,b} }
-  await set(stateRef, state);
+  try {
+    await set(stateRef, state);
+  } catch (err) {
+    console.error("Erreur writeState :", err);
+  }
 }
 
-// Mettre à jour seulement certains champs
 export async function patchState(partial) {
-  await update(stateRef, partial);
+  try {
+    await update(stateRef, partial);
+  } catch (err) {
+    console.error("Erreur patchState :", err);
+  }
 }
 
-// Ex: signaler que le bridge/arduino est vivant
-export async function setLastSeen() {
-  await update(telemetryRef, { lastSeen: Date.now() });
-}
-
-// Ecouter les commandes
 export function onStateChange(cb) {
   return onValue(stateRef, (snap) => cb(snap.val()));
 }
+
+// ─── TELEMETRY ────────────────────────────────────────────────────────────────
+export async function setLastSeen() {
+  await update(telemetryRef, {
+    lastSeen: Date.now(),
+    status: "online"
+  });
+}
+
+export async function setBridgeOffline() {
+  await update(telemetryRef, {
+    connected: false,
+    lastSeen: Date.now(),
+    status: "offline"
+  });
+  await addAlert("bridge", "Déconnexion du bridge", null);
+}
+
+export async function setBridgeOnline() {
+  await onDisconnect(telemetryRef).update({
+    connected: false,
+    status: "offline",
+    lastSeen: Date.now()
+  });
+  await update(telemetryRef, {
+    connected: true,
+    lastSeen: Date.now(),
+    status: "online"
+  });
+  await addAlert("bridge", "Connexion du bridge", null);
+}
+
+// ─── ALERTES ─────────────────────────────────────────────────────────────────
+export async function addAlert(type, message, value = null) {
+  const entry = { type, message, timestamp: Date.now() };
+  if (value !== null) entry.value = value;
+
+  await push(alertsRef, entry);
+  await trimCollection(alertsRef);
+}
+
+export function onAlertsChange(cb) {
+  return onValue(alertsRef, (snap) => {
+    if (!snap.exists()) return cb([]);
+    const entries = Object.entries(snap.val())
+      .map(([id, data]) => ({ id, ...data }))
+      .sort((a, b) => b.timestamp - a.timestamp);
+    cb(entries);
+  });
+}
+
+// ─── HISTORIQUE DES COMMANDES ─────────────────────────────────────────────────
+export async function addHistory(command, source, label) {
+  const entry = { command, source, label, timestamp: Date.now() };
+
+  await push(historyRef, entry);
+  await trimCollection(historyRef);
+  await addAlert("manual", `Commande reçue : ${label} (${source})`, null);
+}
+
+export function onHistoryChange(cb) {
+  return onValue(historyRef, (snap) => {
+    if (!snap.exists()) return cb([]);
+    const entries = Object.entries(snap.val())
+      .map(([id, data]) => ({ id, ...data }))
+      .sort((a, b) => b.timestamp - a.timestamp);
+    cb(entries);
+  });
+} 

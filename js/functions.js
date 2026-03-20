@@ -5,8 +5,9 @@ let writer;
 let isConnected = false;
 let schedules = [];
 
+
 // Seuils des capteurs (selon le code Arduino)
-const THRESHOLD_LIGHT = 100;
+const THRESHOLD_LIGHT = 480;
 const THRESHOLD_SOUND = 550;
 const TEMP_MAX = 25.0;
 const TEMP_MIN = 10.0;
@@ -41,7 +42,6 @@ async function connectSerial() {
         console.log('=== DÉBUT DE LA CONNEXION ===');
         addConsoleLog('🔍 Vérification de Web Serial API...', 'info');
         
-        // Vérifier si Web Serial API est disponible
         if (!('serial' in navigator)) {
             const errorMsg = 'Web Serial API n\'est pas disponible dans ce navigateur';
             console.error('ERREUR CRITIQUE:', errorMsg);
@@ -56,7 +56,6 @@ async function connectSerial() {
         console.log('✓ Web Serial API disponible');
         addConsoleLog('✓ Web Serial API disponible', 'info');
         
-        // Demander l'accès au port série
         console.log('Ouverture de la boîte de dialogue de sélection du port...');
         addConsoleLog('📋 Sélectionnez votre Arduino dans la liste...', 'info');
         
@@ -64,7 +63,6 @@ async function connectSerial() {
         console.log('✓ Port sélectionné:', port);
         addConsoleLog('✓ Port sélectionné avec succès', 'info');
         
-        // Tenter d'ouvrir le port
         console.log('Tentative d\'ouverture du port à 9600 bauds...');
         addConsoleLog('🔓 Ouverture du port série...', 'info');
         
@@ -72,19 +70,13 @@ async function connectSerial() {
         console.log('✓ Port ouvert à 9600 bauds');
         addConsoleLog('✓ Port ouvert (9600 bauds)', 'info');
 
-        // Vérifier les streams
         console.log('Création des streams de lecture/écriture...');
         addConsoleLog('📡 Configuration des streams...', 'info');
         
-        if (!port.readable) {
-            throw new Error('Le port n\'a pas de stream de lecture (readable)');
-        }
-        if (!port.writable) {
-            throw new Error('Le port n\'a pas de stream d\'écriture (writable)');
-        }
+        if (!port.readable) throw new Error('Le port n\'a pas de stream de lecture (readable)');
+        if (!port.writable) throw new Error('Le port n\'a pas de stream d\'écriture (writable)');
         console.log('✓ Streams disponibles (readable + writable)');
 
-        // Créer les streams de lecture/écriture
         const textDecoder = new TextDecoderStream();
         const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
         reader = textDecoder.readable.getReader();
@@ -103,7 +95,11 @@ async function connectSerial() {
         addConsoleLog('📊 En attente des données Arduino...', 'info');
         showToast('Connecté avec succès !', 'success');
 
-        // Démarrer la lecture des données
+        // ✅ AJOUT : Signaler la connexion à Firebase
+        if (window.fb) {
+            await window.fb.setBridgeOnline();
+        }
+
         readSerialData();
 
     } catch (error) {
@@ -116,9 +112,7 @@ async function connectSerial() {
         addConsoleLog('Type: ' + error.name, 'error');
         addConsoleLog('Message: ' + error.message, 'error');
         
-        // Diagnostics spécifiques selon le type d'erreur
         if (error.name === 'NotFoundError') {
-            addConsoleLog('', 'error');
             addConsoleLog('🔍 DIAGNOSTIC: Aucun port sélectionné', 'warning');
             addConsoleLog('💡 Solutions:', 'warning');
             addConsoleLog('  1. Branchez votre Arduino en USB', 'warning');
@@ -128,7 +122,6 @@ async function connectSerial() {
             showToast('Aucun port trouvé. Branchez l\'Arduino.', 'error');
             
         } else if (error.name === 'InvalidStateError') {
-            addConsoleLog('', 'error');
             addConsoleLog('🔍 DIAGNOSTIC: Port déjà ouvert ailleurs', 'warning');
             addConsoleLog('💡 Solutions:', 'warning');
             addConsoleLog('  1. Fermez le Moniteur Série de l\'IDE Arduino', 'warning');
@@ -138,7 +131,6 @@ async function connectSerial() {
             showToast('Port déjà utilisé. Fermez le Moniteur Série.', 'error');
             
         } else if (error.name === 'NetworkError') {
-            addConsoleLog('', 'error');
             addConsoleLog('🔍 DIAGNOSTIC: Erreur de communication', 'warning');
             addConsoleLog('💡 Solutions:', 'warning');
             addConsoleLog('  1. Vérifiez le câble USB', 'warning');
@@ -148,7 +140,6 @@ async function connectSerial() {
             showToast('Erreur de communication USB.', 'error');
             
         } else if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
-            addConsoleLog('', 'error');
             addConsoleLog('🔍 DIAGNOSTIC: Permission refusée', 'warning');
             addConsoleLog('💡 Solutions:', 'warning');
             addConsoleLog('  1. Autorisez l\'accès au port série', 'warning');
@@ -157,7 +148,6 @@ async function connectSerial() {
             showToast('Permission refusée. Autorisez l\'accès.', 'error');
             
         } else if (error.message.includes('readable') || error.message.includes('writable')) {
-            addConsoleLog('', 'error');
             addConsoleLog('🔍 DIAGNOSTIC: Problème de stream', 'warning');
             addConsoleLog('💡 Solutions:', 'warning');
             addConsoleLog('  1. Déconnectez l\'Arduino', 'warning');
@@ -167,7 +157,6 @@ async function connectSerial() {
             showToast('Erreur de communication. Reconnectez l\'Arduino.', 'error');
             
         } else {
-            addConsoleLog('', 'error');
             addConsoleLog('🔍 DIAGNOSTIC: Erreur inconnue', 'warning');
             addConsoleLog('💡 Actions recommandées:', 'warning');
             addConsoleLog('  1. Notez le message d\'erreur ci-dessus', 'warning');
@@ -177,7 +166,6 @@ async function connectSerial() {
             showToast('Erreur inconnue. Consultez la console.', 'error');
         }
         
-        addConsoleLog('', 'error');
         addConsoleLog('📞 Si le problème persiste:', 'info');
         addConsoleLog('  - Vérifiez que l\'Arduino fonctionne (LED d\'alimentation)', 'info');
         addConsoleLog('  - Testez avec l\'IDE Arduino classique', 'info');
@@ -287,17 +275,11 @@ async function readSerialData() {
     }
 }
 
-function processSerialLine(line) {
+async function processSerialLine(line) {
     addConsoleLog(line);
-    
-    // Parsing des données de capteurs
-    // Format: "L:xxx S:yyy" ou "Humidité: xx%  Température: yy°C"
-    
-    // Luminosité et Son
     if (line.includes('L:') && line.includes('S:')) {
         const lightMatch = line.match(/L:(\d+)/);
         const soundMatch = line.match(/S:(\d+)/);
-        
         if (lightMatch) {
             const light = parseInt(lightMatch[1]);
             lightValue.textContent = light;
@@ -309,8 +291,7 @@ function processSerialLine(line) {
                 lightStatus.textContent = '☀️ Lumineux';
                 lightStatus.className = 'sensor-status normal';
             }
-        }
-        
+        } 
         if (soundMatch) {
             const sound = parseInt(soundMatch[1]);
             soundValue.textContent = sound;
@@ -318,16 +299,19 @@ function processSerialLine(line) {
             if (sound > THRESHOLD_SOUND) {
                 soundStatus.textContent = '🔊 Bruit détecté';
                 soundStatus.className = 'sensor-status warning';
+                // Alerte Firebase bruit
+                if (window.fb) {
+                    await window.fb.addAlert("sound", "Bruit détecté", sound);
+                }
             } else {
                 soundStatus.textContent = '🔇 Silencieux';
                 soundStatus.className = 'sensor-status normal';
             }
         }
     }
-    
     // Température et Humidité
     if (line.includes('Humidité:') && line.includes('Température:')) {
-        const humMatch = line.match(/Humidité:\s*([\d.]+)/);
+        const humMatch  = line.match(/Humidité:\s*([\d.]+)/);
         const tempMatch = line.match(/Température:\s*([\d.]+)/);
         
         if (humMatch) {
@@ -342,7 +326,6 @@ function processSerialLine(line) {
                 humStatus.className = 'sensor-status normal';
             }
         }
-        
         if (tempMatch) {
             const temp = parseFloat(tempMatch[1]);
             tempValue.textContent = temp.toFixed(1) + '°C';
@@ -362,19 +345,24 @@ function processSerialLine(line) {
 }
 
 // ============= ENVOI DE COMMANDES =============
-async function sendCommand(cmd) {
+async function sendCommand(cmd, label = null) {
     if (!isConnected || !writer) {
         showToast('Veuillez vous connecter d\'abord', 'warning');
         return;
     }
-    
+
     try {
         await writer.write(cmd);
         addConsoleLog(`→ Commande envoyée: ${cmd}`, 'info');
+
+        // Logger dans Firebase
+        if (window.fb && label) {
+            await window.fb.addHistory(cmd, "web", label);
+        }
+
     } catch (error) {
-        console.error('Erreur d\'envoi:', error);
+        addConsoleLog('✗ Erreur d\'envoi: ' + error.message, 'error');
         showToast('Erreur d\'envoi de commande', 'error');
-        addConsoleLog('✗ Erreur d\'envoi', 'error');
     }
 }
 
