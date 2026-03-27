@@ -17,6 +17,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import java.util.ArrayList;
 import java.util.List;
+import android.util.Log;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -99,26 +100,31 @@ public class MainActivity extends AppCompatActivity {
                     Toast.makeText(MainActivity.this, "Deconnecte", Toast.LENGTH_SHORT).show();
                 });
             }
-            @Override public void onDataReceived(String data) {
+            @Override
+            public void onDataReceived(String data) {
                 runOnUiThread(() -> {
-                    // Accumule les données reçues
                     dataBuffer.append(data);
                     String buffer = dataBuffer.toString();
 
-                    // Traite chaque ligne complète (avec ou sans \n)
-                    // On force aussi le traitement si on voit "L:" ou "Humidi"
                     if (buffer.contains("\n")) {
+                        boolean endsWithNewline = buffer.endsWith("\n");
                         String[] lines = buffer.split("\n");
-                        // Toutes les lignes sauf la dernière (peut être incomplète)
-                        for (int i = 0; i < lines.length - 1; i++) {
-                            processLine(lines[i].trim());
+
+                        for (int i = 0; i < lines.length; i++) {
+                            if (i == lines.length - 1 && !endsWithNewline) {
+                                // Fragment incomplet → on le garde pour le prochain appel
+                                dataBuffer.setLength(0);
+                                dataBuffer.append(lines[i]);
+                                return;
+                            }
+                            if (!lines[i].trim().isEmpty()) {
+                                processLine(lines[i].trim());
+                            }
                         }
-                        // Garde le dernier fragment incomplet
                         dataBuffer.setLength(0);
-                        dataBuffer.append(lines[lines.length - 1]);
-                    } else if (buffer.length() > 30) {
-                        // Sécurité : si pas de \n mais buffer long, on force
-                        processLine(buffer.trim());
+
+                    } else if (buffer.length() > 200) {
+                        Log.w("BLE", "Buffer overflow sans \\n, vidé: " + buffer);
                         dataBuffer.setLength(0);
                     }
                 });
