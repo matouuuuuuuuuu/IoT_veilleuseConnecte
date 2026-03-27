@@ -107,36 +107,34 @@ public class BluetoothConnection {
 
     // ── Thread de lecture en continu ─────────────────────────
     private class ReadThread extends Thread {
-        @Override
-        public void run() {
-            byte[] buffer = new byte[256];
-            int bytes;
-
-            while (isConnected && !Thread.currentThread().isInterrupted()) {
-                try {
-                    if (inputStream != null && inputStream.available() > 0) {
-                        bytes = inputStream.read(buffer);
-                        if (bytes > 0) {
-                            String data = new String(buffer, 0, bytes);
-                            Log.d(TAG, "Recu : " + data);
-                            notifyMain(() -> connectionListener.onDataReceived(data));
+            @Override
+            public void run() {
+                java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(inputStream)
+                );
+                String line;
+                while (isConnected && !Thread.currentThread().isInterrupted()) {
+                    try {
+                        line = reader.readLine(); // attend '\n' → message complet garanti
+                        if (line != null && !line.isEmpty()) {
+                            Log.d(TAG, "Données reçues: " + line);
+                            final String data = line;
+                            if (connectionListener != null) {
+                                new Handler(Looper.getMainLooper()).post(() ->
+                                        connectionListener.onDataReceived(data)
+                                );
+                            }
                         }
-                    } else {
-                        // Petit sleep pour ne pas saturer le CPU
-                        Thread.sleep(50);
+                    } catch (IOException e) {
+                        if (isConnected) {
+                            Log.e(TAG, "Erreur de lecture", e);
+                            disconnect();
+                        }
+                        break;
                     }
-                } catch (IOException e) {
-                    if (isConnected) {
-                        Log.e(TAG, "Erreur de lecture", e);
-                        disconnect();
-                    }
-                    break;
-                } catch (InterruptedException e) {
-                    break;
                 }
             }
         }
-    }
 
     private void notifyMain(Runnable r) {
         new Handler(Looper.getMainLooper()).post(r);
