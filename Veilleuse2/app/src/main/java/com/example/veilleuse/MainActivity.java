@@ -6,18 +6,14 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.view.View;
 import android.widget.Button;
 import android.widget.Switch;
 import android.widget.TextView;
-import android.widget.TimePicker;
 import android.widget.Toast;
+import android.util.Log;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import java.util.ArrayList;
-import java.util.List;
-import android.util.Log;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -37,28 +33,18 @@ public class MainActivity extends AppCompatActivity {
     private static final char CMD_MEL_F  = 'f';
     private static final char CMD_TEST   = 't';
 
-    private static final float HUM_MAX  = 50.0f;
-    private static final float TEMP_MAX = 25.0f;
-    private static final float TEMP_MIN = 10.0f;
 
     // UI
     private Switch   switchPower;
     private Switch   switchAutoMode;
     private TextView tvStatus;
-    private TextView tvScheduleList;
-    private TextView tvTemperature;
-    private TextView tvHumidity;
     private TextView tvLight;
     private TextView tvSound;
     private TextView tvTempAlert;
     private Button   btnColorWarm, btnColorCool;
     private Button   btnColorRed, btnColorGreen, btnColorBlue;
-    private Button   btnAddSchedule;
 
-    private boolean isAutoModeEnabled = false;
-    private final List<Schedule> schedules = new ArrayList<>();
     private String bluetoothDeviceAddress = null;
-    private final StringBuilder dataBuffer = new StringBuilder();
 
     private BluetoothConnection bluetoothConnection;
     private android.bluetooth.BluetoothAdapter bluetoothAdapter;
@@ -92,8 +78,6 @@ public class MainActivity extends AppCompatActivity {
                     tvStatus.setText("Etat: Deconnecte");
                     tvStatus.setTextColor(0xFFFF5252);
                     tvStatus.setBackgroundColor(0xFF1A0000);
-                    tvTemperature.setText("--C");
-                    tvHumidity.setText("--%");
                     tvLight.setText("--");
                     tvSound.setText("--");
                     tvTempAlert.setText("");
@@ -102,32 +86,7 @@ public class MainActivity extends AppCompatActivity {
             }
             @Override
             public void onDataReceived(String data) {
-                runOnUiThread(() -> {
-                    dataBuffer.append(data);
-                    String buffer = dataBuffer.toString();
-
-                    if (buffer.contains("\n")) {
-                        boolean endsWithNewline = buffer.endsWith("\n");
-                        String[] lines = buffer.split("\n");
-
-                        for (int i = 0; i < lines.length; i++) {
-                            if (i == lines.length - 1 && !endsWithNewline) {
-                                // Fragment incomplet → on le garde pour le prochain appel
-                                dataBuffer.setLength(0);
-                                dataBuffer.append(lines[i]);
-                                return;
-                            }
-                            if (!lines[i].trim().isEmpty()) {
-                                processLine(lines[i].trim());
-                            }
-                        }
-                        dataBuffer.setLength(0);
-
-                    } else if (buffer.length() > 200) {
-                        Log.w("BLE", "Buffer overflow sans \\n, vidé: " + buffer);
-                        dataBuffer.setLength(0);
-                    }
-                });
+                runOnUiThread(() -> processLine(data.trim()));
             }
             @Override public void onError(String error) {
                 runOnUiThread(() ->
@@ -136,88 +95,18 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // ═══════════════════════════════════════════════════════════
-    //  Traitement d'une ligne Arduino
-    //  Formats :
-    //    "L:123 S:456"                            -> capteurs loop
-    //    "Humidite: 45.00%  Temperature: 22.50C"  -> DHT11
-    //    "Rouge", "Vert", "Mode Auto"...           -> réponses
-    // ═══════════════════════════════════════════════════════════
     private void processLine(String line) {
         if (line.isEmpty()) return;
 
-        // ── L:xxx S:xxx ───────────────────────────────────────
         if (line.startsWith("L:")) {
-            try {
-                // Format : "L:123 S:456"
-                String[] parts = line.split(" ");
-                for (String part : parts) {
-                    if (part.startsWith("L:")) {
-                        int val = Integer.parseInt(part.substring(2).trim());
-                        tvLight.setText(String.valueOf(val));
-                    } else if (part.startsWith("S:")) {
-                        int val = Integer.parseInt(part.substring(2).trim());
-                        tvSound.setText(String.valueOf(val));
-                    }
-                }
-            } catch (Exception ignored) {}
-            return;
-        }
+            tvLight.setText(line.substring(2));
 
-        // ── DHT11 humidité ────────────────────────────────────
-        if (line.contains("Humidi")) {
-            try {
-                int pIdx = line.indexOf('%');
-                if (pIdx > 0) {
-                    int start = pIdx - 1;
-                    while (start > 0 &&
-                            (Character.isDigit(line.charAt(start - 1)) || line.charAt(start - 1) == '.'))
-                        start--;
-                    float hum = Float.parseFloat(line.substring(start, pIdx).trim());
-                    tvHumidity.setText(String.format("%.1f%%", hum));
-                    if (hum > HUM_MAX) {
-                        tvTempAlert.setText("Humidite trop elevee !");
-                        tvTempAlert.setTextColor(0xFFE91E63);
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
+        } else if (line.startsWith("S:")) {
+            tvSound.setText(line.substring(2));
 
-        // ── DHT11 température ─────────────────────────────────
-        if (line.contains("Temp")) {
-            try {
-                // Cherche le dernier nombre avant 'C'
-                int cIdx = line.lastIndexOf('C');
-                if (cIdx > 0) {
-                    int start = cIdx - 1;
-                    while (start > 0 &&
-                            (Character.isDigit(line.charAt(start - 1)) || line.charAt(start - 1) == '.'))
-                        start--;
-                    float temp = Float.parseFloat(line.substring(start, cIdx).trim());
-                    tvTemperature.setText(String.format("%.1f°C", temp));
 
-                    if (temp > TEMP_MAX) {
-                        tvTempAlert.setText("Temperature trop elevee !");
-                        tvTempAlert.setTextColor(0xFFFF5722);
-                    } else if (temp < TEMP_MIN) {
-                        tvTempAlert.setText("Temperature trop basse !");
-                        tvTempAlert.setTextColor(0xFF2196F3);
-                    } else {
-                        String alert = tvTempAlert.getText().toString();
-                        if (!alert.contains("Humidite")) {
-                            tvTempAlert.setText("Conditions normales");
-                            tvTempAlert.setTextColor(0xFF4CAF50);
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-            return;
-        }
-
-        // ── Réponses commandes ────────────────────────────────
-        if (!line.startsWith("L:") && !line.startsWith("S:") &&
-                !line.startsWith("USB") && !line.startsWith("BT") &&
-                !line.startsWith("Systeme") && !line.isEmpty()) {
+        } else if (!line.startsWith("USB") && !line.startsWith("BT") && !line.startsWith("Systeme")) {
+            // Réponses commandes (Rouge, Vert, Mode Auto…)
             tvStatus.setText("Arduino: " + line);
         }
     }
@@ -226,9 +115,6 @@ public class MainActivity extends AppCompatActivity {
         switchPower    = findViewById(R.id.switchPower);
         switchAutoMode = findViewById(R.id.switchAutoMode);
         tvStatus       = findViewById(R.id.tvStatus);
-        tvScheduleList = findViewById(R.id.tvScheduleList);
-        tvTemperature  = findViewById(R.id.tvTemperature);
-        tvHumidity     = findViewById(R.id.tvHumidity);
         tvLight        = findViewById(R.id.tvLight);
         tvSound        = findViewById(R.id.tvSound);
         tvTempAlert    = findViewById(R.id.tvTempAlert);
@@ -237,7 +123,6 @@ public class MainActivity extends AppCompatActivity {
         btnColorRed    = findViewById(R.id.btnColorRed);
         btnColorGreen  = findViewById(R.id.btnColorGreen);
         btnColorBlue   = findViewById(R.id.btnColorBlue);
-        btnAddSchedule = findViewById(R.id.btnAddSchedule);
 
         Button btnConnect = findViewById(R.id.btnConnectBluetooth);
         if (btnConnect != null)
@@ -262,7 +147,6 @@ public class MainActivity extends AppCompatActivity {
         }
         if (switchAutoMode != null) {
             switchAutoMode.setOnCheckedChangeListener((btn, isChecked) -> {
-                isAutoModeEnabled = isChecked;
                 if (isChecked) { send(CMD_OFF);   toast("Mode auto active"); }
                 else           { send(CMD_WHITE); toast("Mode manuel active"); }
             });
@@ -284,9 +168,17 @@ public class MainActivity extends AppCompatActivity {
         if (btnMelF != null) btnMelF.setOnClickListener(v -> { send(CMD_MEL_F); toast("Frere Jacques"); });
         Button btnTest = findViewById(R.id.btnTest);
         if (btnTest != null) btnTest.setOnClickListener(v -> { send(CMD_TEST); toast("Sequence test"); });
-
-        if (btnAddSchedule != null)
-            btnAddSchedule.setOnClickListener(v -> showScheduleDialog());
+        Button btnStop = findViewById(R.id.btnStop);
+        if (btnStop != null) btnStop.setOnClickListener(v -> {
+            // Envoi en rafale pour passer entre les delay() de l'Arduino
+            new Thread(() -> {
+                for (int i = 0; i < 20; i++) {
+                    bluetoothConnection.sendCommand("x");
+                    try { Thread.sleep(50); } catch (Exception ignored) {}
+                }
+            }).start();
+            toast("Stop");
+        });
     }
 
     private void send(char cmd) { bluetoothConnection.sendCommand(String.valueOf(cmd)); }
@@ -294,36 +186,6 @@ public class MainActivity extends AppCompatActivity {
     private void highlightColor(Button active) {
         Button[] all = {btnColorWarm, btnColorCool, btnColorRed, btnColorGreen, btnColorBlue};
         for (Button b : all) if (b != null) b.setAlpha(b == active ? 1.0f : 0.45f);
-    }
-
-    private void showScheduleDialog() {
-        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
-        builder.setTitle("Nouvelle programmation");
-        View dialogView = getLayoutInflater().inflate(R.layout.dialog_schedule, null);
-        TimePicker tpStart = dialogView.findViewById(R.id.timePickerStart);
-        TimePicker tpEnd   = dialogView.findViewById(R.id.timePickerEnd);
-        tpStart.setIs24HourView(true);
-        tpEnd.setIs24HourView(true);
-        builder.setView(dialogView);
-        builder.setPositiveButton("Ajouter", (dialog, which) -> {
-            Schedule s = new Schedule(
-                    tpStart.getHour(), tpStart.getMinute(),
-                    tpEnd.getHour(),   tpEnd.getMinute());
-            schedules.add(s);
-            updateScheduleList();
-            toast("Programmation ajoutee : " + s);
-        });
-        builder.setNegativeButton("Annuler", null);
-        builder.show();
-    }
-
-    private void updateScheduleList() {
-        if (tvScheduleList == null) return;
-        if (schedules.isEmpty()) { tvScheduleList.setText("Aucune programmation"); return; }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < schedules.size(); i++)
-            sb.append(i + 1).append(". ").append(schedules.get(i)).append("\n");
-        tvScheduleList.setText(sb.toString().trim());
     }
 
     public void connectBluetoothDevice() {
@@ -364,14 +226,4 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void toast(String msg) { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show(); }
-
-    private static class Schedule {
-        final int startHour, startMinute, endHour, endMinute;
-        Schedule(int sh, int sm, int eh, int em) {
-            startHour = sh; startMinute = sm; endHour = eh; endMinute = em;
-        }
-        @Override public String toString() {
-            return String.format("%02d:%02d -> %02d:%02d", startHour, startMinute, endHour, endMinute);
-        }
-    }
 }
