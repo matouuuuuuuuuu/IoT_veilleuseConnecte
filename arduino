@@ -4,33 +4,72 @@
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-// Définition des broches
 SoftwareSerial BluetoothSerial(10, 11);
 const int redPin = 5;
 const int greenPin = 3;
 const int bluePin = 4;
-const int buzzer1 = 7;   // Buzzer principal (mélodie)
-const int buzzer2 = 8;   // Buzzer harmonie 1 (non câblé pour l'instant)
-const int buzzer3 = 9;   // Buzzer harmonie 2
+const int buzzer1 = 7;   
+const int buzzer2 = 8;  
+const int buzzer3 = 9;   
 const int lightSensor = A1;
 const int soundSensor = A0;
-const int humiditySensor = A2;
-
-// Seuils et réglages
-const int thresholdL = 480;  // Seuil luminosité (jour/nuit)
-const int thresholdS = 550;  // Seuil son
+const int thresholdL = 180; 
+const int thresholdS = 50;  
 bool manualMode = false;
+bool stopMusic = false;
+float lastTemp = 0;
+float lastHum = 0;
+unsigned long lastDHTRead = 0;
 
-// *** LECTURE STABILISÉE DE LA LUMINOSITÉ (moyenne de 10 lectures) ***
+/*
+ * readLight()
+ * Retourne la luminosité moyenne sur 10 lectures analogiques (pin A1).
+ * Un délai de 200µs entre chaque lecture stabilise le convertisseur ADC
+ * et évite les valeurs parasites dues aux rebonds électriques.
+ * Plage retournée : 0 (obscurité totale) → 1023 (pleine lumière).
+ */
 int readLight() {
   int sum = 0;
   for (int i = 0; i < 10; i++) {
     sum += analogRead(lightSensor);
-    delay(2);
+    delayMicroseconds(200); 
   }
   return sum / 10;
 }
 
+/*
+ * readSound()
+ * Retourne l'amplitude sonore mesurée sur une fenêtre de 50ms (pin A0).
+ * Algorithme : capture le maximum et le minimum des lectures ADC sur 50ms,
+ * puis retourne leur écart (max - min).
+ * Avantage par rapport à un simple analogRead() :
+ *   - Capture les pics transitoires (clap, voix) même très courts
+ *   - Indépendant de la tension de repos du capteur KY-037 (~512)
+ * Plage retournée : ~0-20 (silence) → 200-600+ (bruit fort).
+ */
+int readSound() {
+  int peakMax = 0;
+  int peakMin = 1023;
+  long startTime = millis();
+
+  while (millis() - startTime < 50) {  
+    int val = analogRead(soundSensor);
+    if (val > peakMax) peakMax = val;
+    if (val < peakMin) peakMin = val;
+  }
+  return peakMax - peakMin;
+}
+
+/*
+ * setup()
+ * Initialisation unique au démarrage de l'Arduino.
+ * - Configure les broches OUTPUT : LED RGB (pins 3,4,5), buzzers (pins 7,8,9)
+ * - Configure les broches INPUT  : capteurs lumière (A1), son (A0)
+ * - Démarre le capteur DHT11 (pin 2)
+ * - Ouvre les ports série : USB à 9600 bauds, Bluetooth HC-05 à 9600 bauds
+ * - Éteint la LED RGB (état initial propre)
+ * - Envoie "Systeme pret" sur USB pour confirmer le démarrage à l'interface web
+ */
 void setup() {
   pinMode(redPin, OUTPUT);
   pinMode(greenPin, OUTPUT);
@@ -47,55 +86,107 @@ void setup() {
   Serial.println("Systeme pret - USB + Bluetooth actifs!");
 }
 
+/*
+ * loop()
+ * Boucle principale exécutée en continu (~80-100ms par cycle).
+ *
+ * Ordre d'exécution :
+ *   1. Lecture capteurs :
+ *        - Luminosité  : moyenne 10 lectures sur ~2ms   (readLight)
+ *        - Son         : amplitude sur fenêtre 50ms     (readSound)
+ *        - Température et humidité : toutes les 2000ms  (DHT11 trop lent pour plus)
+ *          Si la lecture DHT échoue (isnan), conserve la dernière valeur valide.
+ *
+ *   2. Envoi des données série :
+ *        - USB       : "L:xxx S:yyy T:tt.t H:hh.h"  (interface web)
+ *        - Bluetooth : "L:xxx" + "S:yyy"             (T et H omis, trop verbeux)
+ *
+ *   3. Réception des commandes :
+ *        - USB et Bluetooth lus séparément
+ *        - Transmis à handleCommand() avec flag origine (true=USB, false=BT)
+ *
+ *   4. Mode automatique (si manualMode == false) :
+ *        - lightValue >= thresholdL (200) → LED verte  (JOUR)
+ *        - lightValue <  thresholdL       → LED rouge  (NUIT)
+ *        - soundLevel >  thresholdS (100) → Flash jaune 150ms + bip buzzer
+ *
+ *   5. delay(30) : complète le cycle à ~100ms
+ *      (readSound prend déjà 50ms + readLight ~2ms)
+ */
 void loop() {
-  int lightValue = readLight();           // Lecture stabilisée
-  int soundLevel = analogRead(soundSensor);
-  // Envoi des données pour le moniteur série / interface web
-  float temperature = dht.readTemperature();
-  float humidity    = dht.readHumidity();
+  int lightValue = readLight();          
+  int soundLevel = readSound();
+  if (millis() - lastDHTRead >= 2000) {
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+    if (!isnan(t)) lastTemp = t;  
+    if (!isnan(h)) lastHum  = h;
+    lastDHTRead = millis();
+  }
 
   Serial.print("L:"); Serial.print(lightValue);
   Serial.print(" S:"); Serial.print(soundLevel);
-  Serial.print(" T:"); Serial.print(temperature, 1);
-  Serial.print(" H:"); Serial.println(humidity, 1);
+  Serial.print(" T:"); Serial.print(lastTemp, 1);
+  Serial.print(" H:"); Serial.println(lastHum, 1);
 
-  // *** GESTION DES COMMANDES USB (Serial) ***
+  BluetoothSerial.print("L:"); BluetoothSerial.println(lightValue);
+  BluetoothSerial.print("S:"); BluetoothSerial.println(soundLevel);
   if (Serial.available()) {
     char c = Serial.read();
     Serial.print("USB reçu: "); Serial.println(c);
     handleCommand(c, true);
   }
-
-  // *** GESTION DES COMMANDES BLUETOOTH ***
   if (BluetoothSerial.available()) {
     char c = BluetoothSerial.read();
     Serial.print("BT reçu: "); Serial.println(c);
     handleCommand(c, false);
   }
-
-  // --- MODE AUTOMATIQUE ---
   if (manualMode == false) {
 
+    // Couleur de base selon luminosité
     if (lightValue >= thresholdL) {
-      // JOUR : LED verte fixe
-      setColor(0, 255, 0);
+      setColor(0, 255, 0);   // JOUR : vert
     } else {
-      // NUIT : LED rouge fixe
-      setColor(255, 0, 0);
+      setColor(255, 0, 0);   // NUIT : rouge
     }
 
-    // Bip si bruit détecté (quel que soit jour ou nuit)
     if (soundLevel > thresholdS) {
-      tone(buzzer1, 1000, 100);  // Bip court 100ms
+      setColor(255, 255, 0);   // Flash jaune pendant le bip
       delay(150);
-      noTone(buzzer1);
     }
   }
 
-  delay(100);
+  delay(30);
 }
 
-// *** FONCTION CENTRALISÉE DE GESTION DES COMMANDES ***
+/*
+ * handleCommand(char c, bool isUSB)
+ * Point d'entrée centralisé pour toutes les commandes reçues (USB et Bluetooth).
+ * Exécute l'action correspondante et envoie une confirmation sur le bon port
+ * via sendResponse().
+ *
+ * Paramètres :
+ *   c     — caractère de commande reçu
+ *   isUSB — true = répondre sur Serial (USB), false = répondre sur BluetoothSerial
+ *
+ * Tableau des commandes :
+ *   '1' / 'r' → LED Rouge   (manualMode = true)
+ *   '2' / 'g' → LED Verte   (manualMode = true)
+ *   '3' / 'b' → LED Bleue   (manualMode = true)
+ *   '4' / 'y' → LED Jaune   (manualMode = true)
+ *   '5' / 'w' → LED Blanche (manualMode = true)
+ *   '!'       → Sirène d'alarme (3 buzzers, 5 cycles)
+ *   'p'       → Mélodie Joyeux Anniversaire (2 buzzers)
+ *   's'       → Mélodie Star Wars (3 buzzers)
+ *   'f'       → Mélodie Frère Jacques (2 buzzers)
+ *   't'       → Mode test (alternance buzzer + LED)
+ *   'x'       → Arrêt immédiat de toutes les mélodies (stopMusic = true)
+ *   '0'/'o'/'a' → Extinction LED + retour mode automatique (manualMode = false)
+ *
+ * Variables globales modifiées :
+ *   manualMode — passé à true pour toute commande couleur, false pour 'a'/'o'/'0'
+ *   stopMusic  — passé à true pour forcer l'arrêt dans playChord2/playChord3
+ */
 void handleCommand(char c, bool isUSB) {
   if (c == '1' || c == 'r') {
     setColor(255, 0, 0);
@@ -143,11 +234,14 @@ void handleCommand(char c, bool isUSB) {
     test();
   }
   else if (c == 'x') {
-  noTone(buzzer1);
-  noTone(buzzer2);
-  noTone(buzzer3);
-  sendResponse("Stop", isUSB);
-}
+    stopMusic = true;        
+    noTone(buzzer1);
+    noTone(buzzer2);
+    noTone(buzzer3);
+    digitalWrite(buzzer1, LOW);  
+    digitalWrite(buzzer2, LOW);
+    sendResponse("Stop", isUSB);
+  }
   else if (c == '0' || c == 'o' || c == 'a') {
     setColor(0, 0, 0);
     manualMode = false;
@@ -155,7 +249,13 @@ void handleCommand(char c, bool isUSB) {
   }
 }
 
-// *** FONCTION POUR ENVOYER LA RÉPONSE SUR LE BON PORT ***
+/**
+ * sendResponse(String message, bool isUSB)
+ * Envoie un message de confirmation ou d'état vers le port de communication approprié.
+ * * Paramètres :
+ * - message : La chaîne de caractères à transmettre (ex: "Rouge", "Mode Auto").
+ * - isUSB  : Flag booléen déterminant le canal de sortie (true=USB, false=BT).
+ */
 void sendResponse(String message, bool isUSB) {
   if (isUSB) {
     Serial.println(message);
@@ -164,57 +264,63 @@ void sendResponse(String message, bool isUSB) {
   }
 }
 
-// Fonction pour régler la couleur des LEDs
+
+/**
+ * setColor(int r, int g, int b)
+ * Définit la couleur de la LED RGB en modifiant l'intensité de chaque composante.
+ * * Paramètres :
+ * - r : Intensité du rouge (0 à 255).
+ * - g : Intensité du vert (0 à 255).
+ * - b : Intensité du bleu (0 à 255).
+ * * Notes matérielles :
+ * - Utilise analogWrite pour générer un signal PWM permettant le mélange des couleurs[cite: 13].
+ */
 void setColor(int r, int g, int b) {
   analogWrite(redPin, r);
   analogWrite(greenPin, g);
   analogWrite(bluePin, b);
 }
 
-// Fonction pour jouer un "accord" en arpeggio rapide
-void playChordArpeggio(int note1, int note2, int note3, int totalDuration) {
-  int noteTime = totalDuration / 6;
-
-  tone(buzzer1, note1, noteTime); delay(noteTime / 2);
-  tone(buzzer2, note2, noteTime); delay(noteTime / 2);
-  tone(buzzer3, note3, noteTime); delay(noteTime / 2);
-
-  tone(buzzer1, note1, noteTime); delay(noteTime / 2);
-  tone(buzzer2, note2, noteTime); delay(noteTime / 2);
-  tone(buzzer3, note3, noteTime); delay(totalDuration - (noteTime * 3));
-
-  noTone(buzzer1);
-  noTone(buzzer2);
-  noTone(buzzer3);
-}
-
-// Fonction alternative: joue les 3 notes en séquence rapide
-void playChordSequence(int note1, int note2, int note3, int duration) {
-  int noteTime = duration / 3;
-  tone(buzzer1, note1, noteTime); delay(noteTime);
-  tone(buzzer2, note2, noteTime); delay(noteTime);
-  tone(buzzer3, note3, noteTime); delay(noteTime);
-  noTone(buzzer1);
-  noTone(buzzer2);
-  noTone(buzzer3);
-}
-
-// Fonction Sirène avec effet alternant
+/**
+ * siren()
+ * Génère une mélodie d'alarme cyclique en utilisant les trois buzzers en alternance. [cite: 9]
+ * * Caractéristiques techniques :
+ * - Utilise 3 buzzers polyphoniques sur les pins 7, 8 et 9. [cite: 3]
+ * - Fréquences : Oscillations entre sons aigus et graves pour l'effet d'alerte.
+ * - Réactivité : Temps de réponse à l'arrêt ~100ms (durée d'un delay). [cite: 9]
+ * * Effets de bord :
+ * - Modifie l'état des pins buzzer1, buzzer2 et buzzer3.
+ * - Réinitialise stopMusic à false en cas d'interruption. [cite: 14]
+ */
 void siren() {
-  for (int i = 0; i < 20; i++) {
-    tone(buzzer1, 900, 150); delay(100);
-    tone(buzzer3, 950, 150); delay(100);
-    tone(buzzer2, 850, 150); delay(100);
+  #define CHECK_STOP if (stopMusic) { stopMusic = false; noTone(buzzer1); noTone(buzzer2); noTone(buzzer3); return; }
+  for (int i = 0; i < 5; i++) {
+    tone(buzzer1, 900, 150); delay(100); CHECK_STOP;
+    tone(buzzer3, 950, 150); delay(100); CHECK_STOP;
+    tone(buzzer2, 850, 150); delay(100); CHECK_STOP;
 
-    tone(buzzer1, 500, 150); delay(100);
-    tone(buzzer3, 550, 150); delay(100);
-    tone(buzzer2, 450, 150); delay(100);
+    tone(buzzer1, 500, 150); delay(100); CHECK_STOP;
+    tone(buzzer3, 550, 150); delay(100); CHECK_STOP;
+    tone(buzzer2, 450, 150); delay(100); CHECK_STOP;
   }
+
   noTone(buzzer1);
   noTone(buzzer2);
   noTone(buzzer3);
+
+  #undef CHECK_STOP
 }
 
+/**
+ * test()
+ * Exécute une routine de diagnostic matériel pour vérifier les LEDs et les buzzers.
+ * * Caractéristiques techniques :
+ * - Durée totale : Environ 6 secondes (600ms par cycle x 10)[cite: 9].
+ * - Matériel sollicité : Pins 8 (buzzer2), 9 (buzzer3) et pins RGB (3, 4, 5)[cite: 3].
+ * * Note importante :
+ * - Contrairement aux autres mélodies, cette fonction ne contient pas de 
+ * vérification CHECK_STOP et s'exécutera jusqu'à la fin de la boucle[cite: 9].
+ */
 void test() {
   for (int i = 0; i < 10; i++) {
     tone(buzzer3, 950, 250);
@@ -229,128 +335,174 @@ void test() {
   }
 }
 
-// Mélodie P - Joyeux Anniversaire
-// Version 2 buzzers - Joyeux Anniversaire
-// buzzer1 = mélodie principale (voix haute)
-// buzzer2 = basse (voix basse)
-
+/**
+ * playMelodyP()
+ * Joue la mélodie "Joyeux Anniversaire" en polyphonie (mélodie + basse). [cite: 9]
+ * * Caractéristiques techniques :
+ * - Synthèse : Utilise deux buzzers simultanément pour créer une harmonie. [cite: 9, 13]
+ * - Fréquences : Alterne entre les fréquences de la mélodie (ex: 392Hz) et leurs fondamentales (ex: 196Hz). [cite: 13]
+ * - Réactivité : Vérifie l'état du flag stopMusic après chaque note pour un arrêt quasi-immédiat (commande 'x'). [cite: 10, 14]
+ * * Effets de bord :
+ * - Modifie l'état des pins buzzer1 et buzzer2. [cite: 10]
+ * - Réinitialise stopMusic à false en cas d'interruption détectée. [cite: 14]
+ */
 void playMelodyP() {
-  playChord2(392, 196, 400); delay(50);
-  playChord2(392, 196, 400); delay(50);
-  playChord2(440, 220, 400); delay(50);
-  playChord2(392, 196, 400); delay(50);
-  playChord2(523, 262, 600); delay(50);
-  playChord2(494, 247, 400); delay(50);
-
-  playChord2(392, 196, 400); delay(50);
-  playChord2(392, 196, 400); delay(50);
-  playChord2(440, 220, 400); delay(50);
-  playChord2(392, 196, 400); delay(50);
-  playChord2(587, 294, 600); delay(50);
-  playChord2(523, 262, 400); delay(50);
-
-  playChord2(392, 196, 400); delay(50);
-  playChord2(392, 196, 400); delay(50);
-  playChord2(784, 392, 400); delay(50);
-  playChord2(659, 330, 400); delay(50);
-  playChord2(523, 262, 600); delay(50);
-  playChord2(494, 247, 400); delay(50);
-  playChord2(440, 220, 800); delay(100);
-
+  #define CHECK_STOP if (stopMusic) { stopMusic = false; noTone(buzzer1); noTone(buzzer2); noTone(buzzer3); return; }
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(440, 220, 400); CHECK_STOP; delay(50);
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(523, 262, 600); CHECK_STOP; delay(50);
+  playChord2(494, 247, 400); CHECK_STOP; delay(50);
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(440, 220, 400); CHECK_STOP; delay(50);
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(587, 294, 600); CHECK_STOP; delay(50);
+  playChord2(523, 262, 400); CHECK_STOP; delay(50);
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(392, 196, 400); CHECK_STOP; delay(50);
+  playChord2(784, 392, 400); CHECK_STOP; delay(50);
+  playChord2(659, 330, 400); CHECK_STOP; delay(50);
+  playChord2(523, 262, 600); CHECK_STOP; delay(50);
+  playChord2(494, 247, 400); CHECK_STOP; delay(50);
+  playChord2(440, 220, 800); CHECK_STOP; delay(100);
   noTone(buzzer1);
   noTone(buzzer2);
+  #undef CHECK_STOP
 }
 
-// Mélodie F - Frère Jacques
-// Version 2 buzzers - Frère Jacques
-// buzzer1 = mélodie principale (voix haute)
-// buzzer2 = harmonie/basse (voix basse)
-
+/**
+ * playMelodyF()
+ * Joue la mélodie "Frère Jacques" en polyphonie (mélodie + harmonie). [cite: 9]
+ * * * Caractéristiques techniques :
+ * - Synthèse polyphonique : Utilise playChord2() pour générer simultanément deux fréquences distinctes. [cite: 13]
+ * - Sécurité d'arrêt : Intègre la macro CHECK_STOP pour interrompre la lecture dès la réception de la commande 'x'. [cite: 9, 14]
+ * - Rythme : Utilise des délais variables (30ms à 150ms) pour respecter la structure musicale du morceau.
+ * * * Matériel sollicité :
+ * - Buzzers : Utilise principalement buzzer1 et buzzer2 pour les accords. [cite: 3, 13]
+ * - Nettoyage : Force l'état LOW sur les pins à la fin pour éviter les parasites. [cite: 10]
+ * * * Effets de bord :
+ * - Modifie le flag global stopMusic en cas d'interruption. [cite: 10, 11]
+ * - Réinitialise les sorties sonores des buzzers 1 et 2. [cite: 10, 14]
+ */
 void playMelodyF() {
-  // --- "Frère Jacques" x2 ---
-  tone(buzzer1, 523, 400); delay(450);
-  tone(buzzer1, 587, 400); delay(450);
-  tone(buzzer1, 659, 400); delay(450);
-  tone(buzzer1, 523, 600); delay(650);
-
-  tone(buzzer1, 523, 400); delay(450);
-  tone(buzzer1, 587, 400); delay(450);
-  tone(buzzer1, 659, 400); delay(450);
-  tone(buzzer1, 523, 600); delay(650);
-
-  // --- "Dormez-vous ?" x2 ---
-  playChord2(659, 392, 600); delay(50);
-  playChord2(698, 415, 600); delay(50);
-  playChord2(784, 392, 800); delay(50);
-
-  playChord2(659, 392, 600); delay(50);
-  playChord2(698, 415, 600); delay(50);
-  playChord2(784, 392, 800); delay(50);
-
-  // --- "Sonnez les matines !" x2 (descente) ---
-  tone(buzzer1, 784, 300); delay(150);
-  tone(buzzer2, 880, 300); delay(300);
-  tone(buzzer1, 784, 300); delay(150);
-  tone(buzzer2, 698, 300); delay(300);
-
-  tone(buzzer1, 784, 300); delay(150);
-  tone(buzzer2, 880, 300); delay(300);
-  tone(buzzer1, 784, 300); delay(150);
-  tone(buzzer2, 698, 300); delay(300);
-
-  // --- "Din din don" x2 ---
-  playChord2(659, 392, 600); delay(50);
-  playChord2(523, 262, 600); delay(50);
-
-  tone(buzzer1, 523, 400); tone(buzzer2, 784, 400); delay(450);
-  tone(buzzer1, 392, 400); tone(buzzer2, 659, 400); delay(450);
-  playChord2(523, 262, 800); delay(100);
-
+  #define CHECK_STOP if (stopMusic) { stopMusic = false; noTone(buzzer1); noTone(buzzer2); noTone(buzzer3); return; }
+  playChord2(523, 261, 400); CHECK_STOP; delay(50);  
+  playChord2(587, 293, 400); CHECK_STOP; delay(50);  
+  playChord2(659, 329, 400); CHECK_STOP; delay(50);  
+  playChord2(523, 261, 600); CHECK_STOP; delay(100); 
+  playChord2(523, 261, 400); CHECK_STOP; delay(50);
+  playChord2(587, 293, 400); CHECK_STOP; delay(50);
+  playChord2(659, 329, 400); CHECK_STOP; delay(50);
+  playChord2(523, 261, 600); CHECK_STOP; delay(100);
+  playChord2(659, 329, 400); CHECK_STOP; delay(50); 
+  playChord2(698, 349, 400); CHECK_STOP; delay(50);  
+  playChord2(784, 392, 700); CHECK_STOP; delay(100); 
+  playChord2(659, 329, 400); CHECK_STOP; delay(50);
+  playChord2(698, 349, 400); CHECK_STOP; delay(50);
+  playChord2(784, 392, 700); CHECK_STOP; delay(100);
+  playChord2(784, 392, 200); CHECK_STOP; delay(30);  
+  playChord2(880, 440, 200); CHECK_STOP; delay(30); 
+  playChord2(784, 392, 200); CHECK_STOP; delay(30);  
+  playChord2(698, 349, 200); CHECK_STOP; delay(30);  
+  playChord2(659, 329, 500); CHECK_STOP; delay(80);  
+  playChord2(784, 392, 200); CHECK_STOP; delay(30);
+  playChord2(880, 440, 200); CHECK_STOP; delay(30);
+  playChord2(784, 392, 200); CHECK_STOP; delay(30);
+  playChord2(698, 349, 200); CHECK_STOP; delay(30);
+  playChord2(659, 329, 500); CHECK_STOP; delay(80);
+  playChord2(523, 392, 400); CHECK_STOP; delay(50);  
+  playChord2(392, 261, 400); CHECK_STOP; delay(50);  
+  playChord2(523, 261, 700); CHECK_STOP; delay(100); 
+  playChord2(523, 392, 400); CHECK_STOP; delay(50);
+  playChord2(392, 261, 400); CHECK_STOP; delay(50);
+  playChord2(523, 261, 900); CHECK_STOP; delay(150); 
   noTone(buzzer1);
   noTone(buzzer2);
+  digitalWrite(buzzer1, LOW);
+  digitalWrite(buzzer2, LOW);
+  #undef CHECK_STOP
 }
 
-// Mélodie S - Star Wars
-// Version 2 buzzers uniquement
-// buzzer1 = mélodie principale (fréquence haute)
-// buzzer2 = basse/harmonie (fréquence basse)
-
+/**
+ * playChord2(int freq1, int freq2, int dur)
+ * Génère une synthèse sonore polyphonique sur deux buzzers par modulation logicielle.
+ * * * Caractéristiques techniques :
+ * - Synthèse logicielle : Utilise micros() et digitalWrite() pour simuler un signal PWM sur deux fréquences distinctes simultanément[cite: 13].
+ * - Gestion du temps : Calcule les périodes en microsecondes pour une précision optimale des fréquences[cite: 13].
+ * - Réactivité critique : Scrute les ports Serial et BluetoothSerial à chaque cycle de la boucle while pour détecter la commande d'arrêt 'x'[cite: 9, 10].
+ * * * Paramètres :
+ * - freq1 : Fréquence de la première note en Hz (appliquée au buzzer1).
+ * - freq2 : Fréquence de la deuxième note en Hz (appliquée au buzzer2).
+ * - dur   : Durée de l'accord en millisecondes.
+ * * * Effets de bord :
+ * - Modifie l'état des pins buzzer1 et buzzer2[cite: 10, 13].
+ * - Positionne le flag global stopMusic à true en cas d'interruption par l'utilisateur[cite: 10, 11].
+ * - Réinitialise les sorties à LOW en fin d'exécution ou en cas d'arrêt forcé[cite: 10].
+ */
 void playChord2(int freq1, int freq2, int dur) {
   long startTime = millis();
-  
-  // Calcul de la période en microsecondes (T = 1/f)
   long period1 = 1000000L / freq1;
   long period2 = 1000000L / freq2;
-  
-  long lastTime1 = micros();
+  unsigned long lastTime1 = micros();
   long lastTime2 = micros();
-  
   int state1 = LOW;
   int state2 = LOW;
-
   while (millis() - startTime < dur) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == 'x') {
+        digitalWrite(buzzer1, LOW);
+        digitalWrite(buzzer2, LOW);
+        noTone(buzzer3);
+        stopMusic = true;  
+        return;
+    }
+    }
+    if (BluetoothSerial.available()) {
+      char c = BluetoothSerial.read();
+      if (c == 'x') {
+        digitalWrite(buzzer1, LOW);
+        digitalWrite(buzzer2, LOW);
+        noTone(buzzer3);
+        stopMusic = true;
+        return;
+      }
+    }
     long now = micros();
-    
-    // Gérer le buzzer 1
     if (now - lastTime1 >= period1 / 2) {
       state1 = !state1;
       digitalWrite(buzzer1, state1);
       lastTime1 = now;
     }
-    
-    // Gérer le buzzer 2
     if (now - lastTime2 >= period2 / 2) {
       state2 = !state2;
       digitalWrite(buzzer2, state2);
       lastTime2 = now;
     }
   }
+
   digitalWrite(buzzer1, LOW);
   digitalWrite(buzzer2, LOW);
 }
 
+/**
+ * playMelodyS()
+ * Joue le thème de Star Wars en utilisant une combinaison de polyphonie logicielle et de signaux matériels.
+ * * * * Caractéristiques techniques :
+ * - Structure hybride : Alterne entre playChord2() pour les harmonies complexes et tone() pour les notes simples ou montées dramatiques[cite: 9, 13].
+ * - Sécurité d'arrêt : Utilise la macro CHECK_STOP pour interrompre la lecture et forcer l'état LOW sur tous les buzzers si stopMusic est vrai[cite: 10, 14].
+ * - Rythme : Décomposition précise en trois phases (Introduction, Montée dramatique, Section centrale) avec des délais calibrés entre 50ms et 450ms.
+ * * * * Matériel sollicité :
+ * - Trio de buzzers : Mobilise les pins 7, 8 et 9 simultanément pour enrichir la texture sonore du thème[cite: 3].
+ * - Nettoyage final : Assure l'extinction complète des buzzers 1 et 2 en fin de morceau pour éviter tout grésillement résiduel.
+ * * * * Effets de bord :
+ * - Modifie le flag global stopMusic en cas d'interruption par commande 'x'[cite: 9, 10].
+ * - Réinitialise les sorties numériques des trois buzzers.
+ */
 void playMelodyS() {
-  // --- Thème principal ---
+  #define CHECK_STOP if (stopMusic) { stopMusic = false; digitalWrite(buzzer1, LOW); digitalWrite(buzzer2, LOW); digitalWrite(buzzer3, LOW); return; }
   playChord2(440, 220, 500); delay(50);
   playChord2(440, 220, 500); delay(50);
   playChord2(440, 220, 500); delay(50);
@@ -390,8 +542,8 @@ void playMelodyS() {
   playChord2(440, 220, 350); delay(50);
   playChord2(349, 175, 150); delay(50);
   playChord2(440, 220, 1000); delay(200);
-
-  noTone(buzzer1);
-  noTone(buzzer2);
+  digitalWrite(buzzer1, LOW);
+  digitalWrite(buzzer2, LOW);
+  #undef CHECK_STOP
 }
 
